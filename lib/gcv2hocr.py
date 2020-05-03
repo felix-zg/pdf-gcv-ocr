@@ -4,7 +4,11 @@ import sys
 import json
 import argparse
 from string import Template
-from xml.sax.saxutils import escape
+
+try:
+    from html import escape  # python 3.x
+except ImportError:
+    from cgi import escape  # python 2.x
 
 class GCVAnnotation:
 
@@ -41,9 +45,14 @@ class GCVAnnotation:
                  baseline="0 -5",
                  page_height=None,
                  page_width=None,
-                 content=[],
+                 content=None,
                  box=None,
-                 title=''):
+                 title='',
+                 savefile=False):
+        if content==None:
+            self.content = []
+        else:
+            self.content = content
         self.title = title
         self.htmlid = htmlid
         self.baseline = baseline
@@ -51,11 +60,10 @@ class GCVAnnotation:
         self.page_width = page_width
         self.lang = lang
         self.ocr_class = ocr_class
-        self.content = content
-        self.x0 = box[0]['x']
-        self.y0 = box[0]['y']
-        self.x1 = box[2]['x']
-        self.y1 = box[2]['y']
+        self.x0 = box[0]['x'] if 'x' in box[0] and box[0]['x'] > 0 else 0
+        self.y0 = box[0]['y'] if 'y' in box[0] and box[0]['y'] > 0 else 0
+        self.x1 = box[2]['x'] if 'x' in box[2] and box[2]['x'] > 0 else 0
+        self.y1 = box[2]['y'] if 'y' in box[2] and box[2]['y'] > 0 else 0
 
     def maximize_bbox(self):
         self.x0 = min([w.x0 for w in self.content])
@@ -71,74 +79,57 @@ class GCVAnnotation:
         if type(self.content) == type([]):
             content = "".join(map(lambda x: x.render(), self.content))
         else:
-            content = self.content
+            content = escape(self.content)
         return self.__class__.templates[self.ocr_class].substitute(self.__dict__, content=content)
 
-def makeLine(page, box):
-    return GCVAnnotation(
-                    ocr_class='ocr_line',
-                    htmlid="line_%d" % (len(page.content)),
-                    content=[],
-                    box=box)
-
-def check_box(box, min_margin, max_x, max_y):
-    for b in box:
-        if b["x"] < min_margin or b["x"] > max_x - min_margin:
-            return False
-        if b["y"] < min_margin or b["y"] > max_y - min_margin:
-            return False
-    return True
-
-def fromResponse(resp, baseline_tolerance=2, **kwargs):
+def fromResponse(resp, baseline_tolerance=20, **kwargs):
     last_baseline = -100
     page = None
     curline = None
-
-    min_margin = 5
-    
-    for page_id, pageObj in enumerate(resp['fullTextAnnotation']['pages']):
+    if isinstance(resp, bool) and not resp:
+        box = [{"x": 0, "y": 0}, {"x": 0, "y": 0}, {"x": 0, "y": 0}, {"x": 0, "y": 0}]
         page = GCVAnnotation(
+            ocr_class='ocr_page',
+            htmlid='page_0',
+            box=box,
+            **kwargs
+        )
+    else:
+        for anno_idx, anno_json in enumerate(resp['textAnnotations']):
+            box = anno_json['boundingPoly']['vertices']
+            if anno_idx == 0:
+                page = GCVAnnotation(
                     ocr_class='ocr_page',
                     htmlid='page_0',
-                    box=[{"x": 0, "y": 0}, None, {"x": pageObj['width'], "y": pageObj['height']}, None]
-        )
-        
-        for block in pageObj['blocks']:
-            for paragraph in block['paragraphs']:
-                box = paragraph['boundingBox']['vertices']
+                    box=box,
+                    **kwargs
+                    )
+                continue
 
-                curline = makeLine(page, box)
-                do_add = True
-                
-                for wordObj in paragraph['words']:
-                    box = wordObj['boundingBox']['vertices']
+            if not 'description' in anno_json:
+                continue
 
-                    do_add = do_add and check_box(box, min_margin, pageObj['width'], pageObj['height'])
-
-                    wordText = ""
-                    for symbol in wordObj['symbols']:
-                        wordText += symbol['text']
-                        if symbol['property'] is not None:
-                            detectedBreak = symbol['property']['detectedBreak']
-                            if detectedBreak is not None:
-                                if detectedBreak['type'] == 'SPACE':
-                                    wordText += " "
-                                elif detectedBreak['type'] == 'LINE_BREAK':
-                                    wordText += " "
-
-                    word = GCVAnnotation(ocr_class='ocrx_word', content=escape(wordText), box=box)
-                    word.htmlid="word_%d_%d" % (len(page.content) - 1, len(curline.content))
-                    curline.content.append(word)
-
-                if do_add:
-                    page.content.append(curline)
-#        for line in page.content:
-            #line.maximize_bbox()
-
+            word = GCVAnnotation(ocr_class='ocrx_word', content=anno_json['description'], box=box)
+            if word.y1-abs(last_baseline) > baseline_tolerance:
+                curline = GCVAnnotation(
+                        ocr_class='ocr_line',
+                        htmlid="line_%d" % (len(page.content)),
+                        box=box)
+                page.content.append(curline)
+                last_baseline = word.y1
+            word.htmlid="word_%d_%d" % (len(page.content) - 1, len(curline.content))
+            curline.content.append(word)
+        for line in page.content:
+            line.maximize_bbox()
         page.maximize_bbox()
+    if resp["fullTextAnnotation"] and resp["fullTextAnnotation"]["pages"]:
+        full_page = resp["fullTextAnnotation"]["pages"][0]
+        if not page.page_width: page.page_width = full_page["width"]
+        if not page.page_height: page.page_height = full_page["height"]
+    else:
         if not page.page_width: page.page_width = page.x1
         if not page.page_height: page.page_height = page.y1
-        return page
+    return page
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -173,15 +164,28 @@ if __name__ == '__main__':
         "--page-height",
         "-H",
         help="Image height. Automatically detected unless specified")
+    parser.add_argument(
+        "--savefile",
+        help="Save to this file instead of outputting to stdout"
+    )
     args = parser.parse_args()
 
-    instream = sys.stdin if args.gcv_file is '-' else open(args.gcv_file, 'r')
+    instream = sys.stdin if args.gcv_file is '-' else open(args.gcv_file, 'r', encoding='utf-8' )
     resp = json.load(instream)
-    if hasattr(resp, 'responses'): resp = ['responses'][0]
+
+    if hasattr(resp, 'responses'):
+        resp = ['responses'][0]
 
     del(args.gcv_file)
+    print(resp)
     page = fromResponse(resp, **args.__dict__)
-    if str == bytes:
-        print(page.render().encode('utf-8'))
+
+    if args.savefile:
+        with (open(args.savefile, 'w', encoding="utf-8")) as outfile:
+            outfile.write(page.render().encode('utf-8') if str == bytes else page.render())
+            outfile.close()
     else:
-        print(page.render())
+        if str == bytes:
+            print(page.render().encode('utf-8'))
+        else:
+            print(page.render())

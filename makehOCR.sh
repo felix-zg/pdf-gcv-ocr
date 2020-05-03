@@ -10,8 +10,8 @@ then
         # width=`echo $line | sed -n 's/.*width="\([^"]*\).*/\1/p'`
         # echo "PARAMS: $imagename $line $height $width"
         outf="`dirname $pdfPage`/`basename \"$pdfPage\" .json`.hocr"
-        echo "./lib/gcv2hocr.py \"$pdfPage\" -H 1764 -W 2283 > \"$outf\""
-        ./lib/gcv2hocr.py "$pdfPage" -H 1764 -W 2283 > "$outf"
+        echo "./lib/gcv2hocr.py \"./$pdfPage\" > \"$outf\""
+        ./lib/gcv2hocr.py "$pdfPage" > "$outf"
     done
     IFS="$OIFS"
 else

@@ -1,10 +1,11 @@
-global.window = {document: {createElementNS: () => {return {}} }};
+//global.window = {document: {createElementNS: () => {return {}} }};
 global.navigator = {};
-global.btoa = () => {};
+global.btoa = () => {
+};
 //global.html2pdf = require("html2pdf");
 global.html2pdf = null;
 
-const jsPDF = require('jspdf');
+const xml2js = require('xml2js');
 const path = require('path');
 const utils = require('./utils');
 const exec = require('child_process').exec;
@@ -19,10 +20,10 @@ function convertPDF(inputFile, outputDir) {
 
     return new Promise((resolve, reject) => {
         const inputPath = path.parse(inputFile);
-        const outputFile = path.join(inputPath.dir, outputDir, inputPath.name + "-%03d.jpg");
+        const outputFile = path.join(inputPath.dir, outputDir, inputPath.name);
 //        console.warn('Only looking at first 100 pages for demo, CHANGE THIS BEFORE PRODUCTION.');
 //        exec(`mkdir -p "${path.dirname(outputFile)}" && pdftohtml -zoom 4 -c -l 100 -xml "${inputFile}" "${outputFile}"`, async (error, stdout, stderr) => {
-        const commandLine = `mkdir -p "${path.dirname(outputFile)}" && convert -density 150 "${inputFile}" -quality 90 "${outputFile}"`;
+        const commandLine = `mkdir -p "${path.dirname(outputFile)}" && pdftohtml -zoom 4 -c -l 100 -xml "${inputFile}" "${outputFile}"`;
         console.log("... running ImageMagick, command line: " + commandLine);
         exec(commandLine, async (error, stdout, stderr) => {
             if (stderr) {
@@ -31,18 +32,45 @@ function convertPDF(inputFile, outputDir) {
             if (error) reject([error, stderr]);
             else {
                 outputDir = path.dirname(outputFile);
-                
+
                 let extractedFiles = await utils.readdirAsync(outputDir);
 
                 extractedFiles = extractedFiles.map(file => path.join(outputDir, file));
-                
-                let pdfMetadata = extractedFiles.filter(file => path.extname(file) == '.xml')[0];
-                let pdfImages = extractedFiles.filter(file => path.extname(file) == '.png' || path.extname(file) == '.jpg');
 
-                resolve({
-                    outputDir: outputDir,
-                    pdfMetadata: pdfMetadata,
-                    pdfImages: pdfImages
+                let pdfMetadata = extractedFiles.filter(file => path.extname(file) == '.xml')[0];
+                const parser = new xml2js.Parser();
+                fs.readFile(__dirname + "/" + pdfMetadata, function (err, data) {
+                    parser.parseString(data, function (err, result) {
+                        //console.dir(result);
+                        const height = result.pdf2xml.page["0"].$.height;
+                        const width = result.pdf2xml.page["0"].$.width;
+
+                        const commandLine = `convert -geometry ${width}x${height} -density 150 "${inputFile}" -quality 90 "${outputFile}-%03d.jpg"`;
+                        console.log("... running ImageMagick, command line: " + commandLine);
+                        exec(commandLine, async (error, stdout, stderr) => {
+                            if (stderr) {
+                                console.log(`Errors in ImageMagick processing of the images, but will try to proceed anyway.\n Reported errors: ${stderr}`);
+                            }
+                            if (error) reject([error, stderr]);
+                            else {
+                                outputDir = path.dirname(outputFile);
+
+                                let extractedFiles = await utils.readdirAsync(outputDir);
+
+                                extractedFiles = extractedFiles.map(file => path.join(outputDir, file));
+
+                                let pdfMetadata = extractedFiles.filter(file => path.extname(file) == '.xml')[0];
+                                let pdfImages = extractedFiles.filter(file => path.extname(file) == '.png' || path.extname(file) == '.jpg');
+
+                                resolve({
+                                    outputDir: outputDir,
+                                    pdfMetadata: pdfMetadata,
+                                    pdfImages: pdfImages
+                                });
+                            }
+                        });
+                        console.log('Done');
+                    });
                 });
             }
         });
@@ -52,7 +80,7 @@ function convertPDF(inputFile, outputDir) {
     // });
 }
 
-function readPDF(inputFile){
+function readPDF(inputFile) {
     let pdfReader = hummus.createReader(inputFile);
     return pdfReader;
 }
@@ -64,26 +92,26 @@ function translateCoords(coords, page, pdfPage) {
     let left = coords.left;
 
     let newCoords = {
-        top: (top/page.height) * pdfPage.height,
-        left: (left/page.width) * pdfPage.width,
-        height: (coords.height/page.height) * pdfPage.height,
-        width: (coords.width/page.width) * pdfPage.width
+        top: (top / page.height) * pdfPage.height,
+        left: (left / page.width) * pdfPage.width,
+        height: (coords.height / page.height) * pdfPage.height,
+        width: (coords.width / page.width) * pdfPage.width
     }
-    
+
     return newCoords;
 }
 
 function setFonts(doc, page, pageMetadata) {
-    let scale = pageMetadata.width/page.width;
+    let scale = pageMetadata.width / page.width;
     scale = 0.8;
-    
+
     console.log(pageMetadata.height, page.height, page.fontspec);
 
     utils.hasToBeArray(page.fontspec)
-    .forEach(font => {
-        font.size = font.size * scale;
-        doc.fontSpec.set(font.id, font)
-    });
+        .forEach(font => {
+            font.size = font.size * scale;
+            doc.fontSpec.set(font.id, font)
+        });
 
     return doc
 }
@@ -93,46 +121,51 @@ function parseGCV(doc, page) {
     let pageMetadata = doc.pageInfo(page.number);
 
     return _(page.image)
-    .map(image => image.ocr)
-    .flatMap(image => _(utils.readFileAsync(image, 'utf-8')))
-    .map(JSON.parse)
-    .pluck('fullTextAnnotation')
-    .flatten()
-    .pluck('pages')
-    .flatten()
-    .doto(pg => {
-        page.height = pg.height;
-        page.width = pg.width;
-    })
-    .pluck('blocks')
-    .flatten()
-    .pluck('paragraphs')
-    .flatten()
-    .pluck('words')
-    .flatten()
-    .pluck('symbols')
-    .flatten()
-    .map(d => {
-        let height = Math.max(...d.boundingBox.vertices.map(d => d.y)) - Math.min(...d.boundingBox.vertices.map(d => d.y));
-        let width = Math.max(...d.boundingBox.vertices.map(d => d.x)) - Math.min(...d.boundingBox.vertices.map(d => d.x));
-        
-        console.log(JSON.stringify(d.boundingBox), d.text);
+        .map(image => image.ocr)
+        .flatMap(image => _(utils.readFileAsync(image, 'utf-8')))
+        .map(JSON.parse)
+        .pluck('fullTextAnnotation')
+        .flatten()
+        .pluck('pages')
+        .flatten()
+        .doto(pg => {
+            page.height = pg.height;
+            page.width = pg.width;
+        })
+        .pluck('blocks')
+        .flatten()
+        .pluck('paragraphs')
+        .flatten()
+        .pluck('words')
+        .flatten()
+        .pluck('symbols')
+        .flatten()
+        .map(d => {
+            let height = Math.max(...d.boundingBox.vertices.map(d => d.y)) - Math.min(...d.boundingBox.vertices.map(d => d.y));
+            let width = Math.max(...d.boundingBox.vertices.map(d => d.x)) - Math.min(...d.boundingBox.vertices.map(d => d.x));
 
-        let coords = { top: Math.max(...d.boundingBox.vertices.map(d => d.y)), left: Math.max(...d.boundingBox.vertices.map(d => d.x)), height: height, width: width };
-        let newCoords = coords//translateCoords(coords, page, pageMetadata);
-        //newCoords.boundingBox =  boundingBox: JSON.stringify(d.boundingBox)
-        newCoords['@text'] = d.text
-        return newCoords
-    })
-    .collect()
-    .toPromise(Promise)
-    .then(texts => {
-        page.text = texts
-        return page
-    });
+            console.log(JSON.stringify(d.boundingBox), d.text);
+
+            let coords = {
+                top: Math.max(...d.boundingBox.vertices.map(d => d.y)),
+                left: Math.max(...d.boundingBox.vertices.map(d => d.x)),
+                height: height,
+                width: width
+            };
+            let newCoords = coords//translateCoords(coords, page, pageMetadata);
+            //newCoords.boundingBox =  boundingBox: JSON.stringify(d.boundingBox)
+            newCoords['@text'] = d.text
+            return newCoords
+        })
+        .collect()
+        .toPromise(Promise)
+        .then(texts => {
+            page.text = texts
+            return page
+        });
     //.zip(imageStream)
     //.each(console.log)
-    
+
 }
 
 function enrichPage(doc, page, fonts) {
@@ -141,32 +174,32 @@ function enrichPage(doc, page, fonts) {
     let pageMetadata = doc.pageInfo(page.number);
     let pdfPage = doc.editPage(page.number)
 
-    if(page.fontspec) doc = setFonts(doc, page, pageMetadata);
+    if (page.fontspec) doc = setFonts(doc, page, pageMetadata);
 
     _(utils.hasToBeArray(page.text))
-    .map(text => {
-        let textCoords = translateCoords(text, page, pageMetadata);
-        let font;
-        if(typeof text.font == 'object') font = doc.fontSpec.get(text.font);
-        else font = {
-            family: "Times",
-            color: "#000000",
-            size: 3
-        }
+        .map(text => {
+            let textCoords = translateCoords(text, page, pageMetadata);
+            let font;
+            if (typeof text.font == 'object') font = doc.fontSpec.get(text.font);
+            else font = {
+                family: "Times",
+                color: "#000000",
+                size: 3
+            }
 
-        font.textBox = {
-            width: text.width,
-            height: text.height,
-            lineHeight: text.height,
-            lineWidth: text.width
-        }
+            font.textBox = {
+                width: text.width,
+                height: text.height,
+                lineHeight: text.height,
+                lineWidth: text.width
+            }
 
-        pdfPage.text(text['@text'], textCoords.left, textCoords.top, font)
-    })
-    .done(() => {
-        pdfPage.endPage();
-    })
-    
+            pdfPage.text(text['@text'], textCoords.left, textCoords.top, font)
+        })
+        .done(() => {
+            pdfPage.endPage();
+        })
+
     return doc;
 }
 
@@ -185,7 +218,7 @@ function writePDF(doc) {
 
     delete global.window;
     delete global.navigator;
-    delete global.btoa;  
+    delete global.btoa;
 }
 
 module.exports = {
