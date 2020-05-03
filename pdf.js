@@ -1,6 +1,8 @@
 global.window = {document: {createElementNS: () => {return {}} }};
 global.navigator = {};
 global.btoa = () => {};
+//global.html2pdf = require("html2pdf");
+global.html2pdf = null;
 
 const jsPDF = require('jspdf');
 const path = require('path');
@@ -17,10 +19,16 @@ function convertPDF(inputFile, outputDir) {
 
     return new Promise((resolve, reject) => {
         const inputPath = path.parse(inputFile);
-        const outputFile = path.join(inputPath.dir, outputDir, inputPath.name);
-        console.warn('Only looking at first 10 pages for demo, CHANGE THIS BEFORE PRODUCTION.');
-        exec(`mkdir -p "${path.dirname(outputFile)}" && pdftohtml -zoom 4 -c -l 10 -xml "${inputFile}" "${outputFile}"`, async (error, stdout, stderr) => {
-            if (error || stderr) reject([error, stderr]);
+        const outputFile = path.join(inputPath.dir, outputDir, inputPath.name + "-%03d.jpg");
+//        console.warn('Only looking at first 100 pages for demo, CHANGE THIS BEFORE PRODUCTION.');
+//        exec(`mkdir -p "${path.dirname(outputFile)}" && pdftohtml -zoom 4 -c -l 100 -xml "${inputFile}" "${outputFile}"`, async (error, stdout, stderr) => {
+        const commandLine = `mkdir -p "${path.dirname(outputFile)}" && convert -density 150 "${inputFile}" -quality 90 "${outputFile}"`;
+        console.log("... running ImageMagick, command line: " + commandLine);
+        exec(commandLine, async (error, stdout, stderr) => {
+            if (stderr) {
+                console.log(`Errors in ImageMagick processing of the images, but will try to proceed anyway.\n Reported errors: ${stderr}`);
+            }
+            if (error) reject([error, stderr]);
             else {
                 outputDir = path.dirname(outputFile);
                 
@@ -29,7 +37,7 @@ function convertPDF(inputFile, outputDir) {
                 extractedFiles = extractedFiles.map(file => path.join(outputDir, file));
                 
                 let pdfMetadata = extractedFiles.filter(file => path.extname(file) == '.xml')[0];
-                let pdfImages = extractedFiles.filter(file => path.extname(file) == '.png');
+                let pdfImages = extractedFiles.filter(file => path.extname(file) == '.png' || path.extname(file) == '.jpg');
 
                 resolve({
                     outputDir: outputDir,
@@ -38,7 +46,10 @@ function convertPDF(inputFile, outputDir) {
                 });
             }
         });
-    })
+    });
+    // .catch(function(error) {
+    //     console.log("Error: ", error);
+    // });
 }
 
 function readPDF(inputFile){
